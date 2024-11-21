@@ -1,3 +1,4 @@
+// This iteration of server.c has crossword implementation with both 3x3 and 5x5 grids. Haven't been able to test with multiple users.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
