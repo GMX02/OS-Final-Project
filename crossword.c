@@ -1,3 +1,4 @@
+//Test of crossword implentation, has been added to client.c for easier use.
 #include <stdio.h>
 #include <stdlib.h>  // Include stdlib.h for malloc and free
 
