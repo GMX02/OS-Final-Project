@@ -1,4 +1,3 @@
-// Includes username functionality to differentiate between users.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +8,7 @@
 
 #pragma comment(lib, "ws2_32.lib") // Link against Winsock library
 
-#define PORT 8080
+#define PORT 4206
 #define BUFFER_SIZE 1024
 #define USERNAME_SIZE 50
 
