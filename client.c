@@ -8,20 +8,17 @@
 
 #pragma comment(lib, "ws2_32.lib") // Link against Winsock library
 
-#define PORT 8080
+#define PORT 4206
 #define BUFFER_SIZE 1024
 #define USERNAME_SIZE 50
 
-// Function to create the crossword grid dynamically
 char **createGrid(int size) {
-    // Allocate memory for the array of row pointers
     char **grid = malloc(size * sizeof(char *));
     if (grid == NULL) {
         printf("Memory allocation failed.\n");
         exit(1);
     }
 
-    // Allocate memory for each row and initialize cells to spaces
     for (int i = 0; i < size; i++) {
         grid[i] = malloc(size * sizeof(char));
         if (grid[i] == NULL) {
@@ -30,12 +27,11 @@ char **createGrid(int size) {
         }
         // Initialize the row with spaces
         for (int j = 0; j < size; j++) {
-            grid[i][j] = ' ';
+            grid[i][j] = ' '; // Initialize all cells to spaces
         }
     }
     return grid;
 }
-
 // Function to display the crossword grid with borders
 void displayGrid(char **grid, int size) {
     printf("\nCurrent Grid:\n");
@@ -97,6 +93,53 @@ void sendGridToServer(SOCKET sock, char **grid, int size, const char *username) 
         printf("Failed to send data. Error Code: %d\n", WSAGetLastError());
     }
 }
+// Function to display the answer grid
+void displayAnswers(int gridSize) {
+    printf("\nAnswer Grid:\n");
+
+    if (gridSize == 3) {
+        // Display the 3x3 answer grid
+        printf(" --- --- ---\n");
+        printf("| D | A | D |\n");
+        printf(" --- --- ---\n");
+        printf("| O | W | E |\n");
+        printf(" --- --- ---\n");
+        printf("| T | E | N |\n");
+        printf(" --- --- ---\n");
+
+    } else if (gridSize == 5) {
+        // Replace this section with the correct display logic for a 5x5 answer grid
+        // Example grid for demonstration:
+        printf(" --- --- --- --- ---\n");
+        printf("| S | H | A | N | T |\n");
+        printf(" --- --- --- --- ---\n");
+        printf("| C | E | D | A | R |\n");
+        printf(" --- --- --- --- ---\n");
+        printf("| O | L | I | V | E |\n");
+        printf(" --- --- --- --- ---\n");
+        printf("| F | L | E | E | S |\n");
+        printf(" --- --- --- --- ---\n");
+        printf("| F | O | U | L | S |\n");
+        printf(" --- --- --- --- ---\n");
+
+
+      // Answer grid for 5x5 crossword
+        // A1: "SHANT"
+        // A2: "CEDAR"
+        // A3: "OLIVE"
+        // A4: "FLEES"
+        // A5: "FOULS"
+        // D1: "SCOFF"
+        // D2: "HELLO"
+        // D3: "ADIEU"
+        // D4: "NAVEL"
+        // D5: "TRESS"
+
+    } else {
+        printf("Invalid grid size. No answers available.\n");
+    }
+}
+
 
 // Function to display clues
 void displayClues(int gridSize) {
@@ -312,7 +355,7 @@ int main() {
     // Configure server address
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(PORT);
-    server_address.sin_addr.s_addr = inet_addr("127.0.0.1"); // Replace with your server's IPv4 address
+    server_address.sin_addr.s_addr = inet_addr("10.2.147.184"); // Replace with your server's IPv4 address
 
     // Connect to server
     if (connect(sock, (struct sockaddr *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
@@ -351,28 +394,30 @@ int main() {
 
     int gridSize = 0;
     char inputLine[100];
-    while (gridSize != 3 && gridSize != 5) {
-        printf("Enter 1 for a 3x3 grid or 2 for a 5x5 grid: ");
-        if (fgets(inputLine, sizeof(inputLine), stdin) != NULL) {
-            int input = 0;
-            if (sscanf(inputLine, "%d", &input) == 1) {
-                if (input == 1) {
-                    gridSize = 3;
-                } else if (input == 2) {
-                    gridSize = 5;
-                } else {
-                    printf("Invalid input. Please input 1 or 2.\n");
-                }
-            } else {
-                printf("Invalid input. Please input 1 or 2.\n");
+
+while (gridSize != 3 && gridSize != 5 && gridSize != 21) {
+    printf("Enter 1 for a 3x3 grid, 2 for a 5x5 grid: ");
+    if (fgets(inputLine, sizeof(inputLine), stdin) != NULL) {
+        int input = 0;
+        if (sscanf(inputLine, "%d", &input) == 1) {
+            if (input == 1) {
+                gridSize = 3;
+            } else if (input == 2) {
+                gridSize = 5;
+            }else {
+                printf("Invalid input. Please input 1, 2, or 3.\n");
             }
         } else {
-            printf("Error reading input.\n");
-            closesocket(sock);
-            WSACleanup();
-            return 1;
+            printf("Invalid input. Please input 1, 2, or 3.\n");
         }
+    } else {
+        printf("Error reading input.\n");
+        closesocket(sock);
+        WSACleanup();
+        return 1;
     }
+}
+
 
     // Create the grid dynamically
     char **grid = createGrid(gridSize);
@@ -386,7 +431,9 @@ int main() {
 
     while (keepEditing) {
         // Display the grid
+        displayClues(gridSize);
         displayGrid(grid, gridSize);
+
 
         // Send the grid to the server
         sendGridToServer(sock, grid, gridSize, username);
@@ -400,8 +447,7 @@ int main() {
         buffer[bytes_read] = '\0'; // Null-terminate the received data
         printf("Server: %s\n", buffer);
 
-        // Prompt the user for input
-        printf("Enter the row (1-%d), column (1-%d), and character to place,\n'or c' to check your answers, 'q' to display the clues, or 'x' to quit: ", gridSize, gridSize);
+        printf("Enter the row (1-%d), column (1-%d), and character to place,\n'or c' to check your answers, or 'x' to quit: ", gridSize, gridSize);
 
         // Read input
         int row, col;
@@ -414,9 +460,9 @@ int main() {
                 break;
             }
 
-            // Check if the user wants to display the clues
-            if (inputLine[0] == 'q' || inputLine[0] == 'Q') {
-                displayClues(gridSize);
+            // backdoor answers
+            if (inputLine[0] == '~') {
+                displayAnswers(gridSize);
                 continue;
             }
 
