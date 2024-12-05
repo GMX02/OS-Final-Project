@@ -8,7 +8,7 @@
 
 #pragma comment(lib, "ws2_32.lib") // Link against Winsock library
 
-#define PORT 4206
+#define PORT 1111
 #define BUFFER_SIZE 1024
 #define USERNAME_SIZE 50
 #define MAX_BANNED_WORDS 1000
@@ -236,12 +236,12 @@ void handle_client(void *client_socket_ptr) {
         free(buffer_copy);
 
         // Validate the grid size
-        if (gridSize != 3 && gridSize != 5) {
+        if (gridSize < 1 || gridSize > 6) {
             printf("Received invalid grid size %d from client %s.\n", gridSize, username);
             const char *response = "Invalid grid size.";
             send(client_socket, response, strlen(response), 0);
             continue;
-        }
+        } else 
 
         // Check if the username matches
         if (strcmp(username, received_username) != 0) {
