@@ -1,41 +1,135 @@
-
-// This iteration of server.c has crossword implementation with both 3x3 and 5x5 grids. Haven't been able to test with multiple users.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>      // For character functions
 #include <winsock2.h>
 #include <windows.h>
+#include <process.h> // For _beginthread
+#include <ctype.h>   // For character functions
 
 #pragma comment(lib, "ws2_32.lib") // Link against Winsock library
 
 #define PORT 4206
 #define BUFFER_SIZE 1024
 #define USERNAME_SIZE 50
+#define MAX_BANNED_WORDS 1000
+#define MAX_WORD_LENGTH 50
 
+// Global variables to store banned words
+char *banned_words[MAX_BANNED_WORDS];
+int banned_word_count = 0;
+
+// Function to trim newline and carriage return characters
+void trim_newline(char *str) {
+    size_t len = strlen(str);
+    while(len > 0 && (str[len-1] == '\n' || str[len-1] == '\r')) {
+        str[len-1] = '\0';
+        len--;
+    }
+}
+
+// Function to load banned words from Profanity.txt
+void load_profanity(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        printf("Failed to open %s. No profanity filtering will be applied.\n", filename);
+        return;
+    }
+
+    char line[MAX_WORD_LENGTH];
+    while (fgets(line, sizeof(line), file) && banned_word_count < MAX_BANNED_WORDS) {
+        trim_newline(line);
+        // Allocate memory for the word and store it
+        banned_words[banned_word_count] = malloc(strlen(line) + 1);
+        if (banned_words[banned_word_count] == NULL) {
+            printf("Memory allocation failed while loading profanity words.\n");
+            fclose(file);
+            exit(1);
+        }
+        strcpy(banned_words[banned_word_count], line);
+        banned_word_count++;
+    }
+
+    fclose(file);
+}
+
+// Function to convert a string to lowercase (for case-insensitive comparison)
+void to_lowercase(char *str) {
+    for (; *str; ++str) {
+        *str = (char)tolower(*str);
+    }
+}
+
+// Function to check if a string contains any banned words (case-insensitive)
+int contains_profanity(const char *str) {
+    if (banned_word_count == 0) {
+        return 0; // No banned words loaded
+    }
+
+    // Create a lowercase copy of the input string for case-insensitive comparison
+    char *lower_str = malloc(strlen(str) + 1);
+    if (!lower_str) {
+        printf("Memory allocation failed during profanity check.\n");
+        return 0; // On failure, assume no profanity
+    }
+    strcpy(lower_str, str);
+    to_lowercase(lower_str);
+
+    for (int i = 0; i < banned_word_count; i++) {
+        // Create a lowercase copy of the banned word
+        char *lower_banned = malloc(strlen(banned_words[i]) + 1);
+        if (!lower_banned) {
+            printf("Memory allocation failed during profanity check.\n");
+            free(lower_str);
+            return 0;
+        }
+        strcpy(lower_banned, banned_words[i]);
+        to_lowercase(lower_banned);
+
+        if (strstr(lower_str, lower_banned) != NULL) {
+            free(lower_banned);
+            free(lower_str);
+            return 1; // Profanity found
+        }
+        free(lower_banned);
+    }
+
+    free(lower_str);
+    return 0; // No profanity found
+}
+
+// Function to create the crossword grid dynamically
 char **createGrid(int size) {
+    // Allocate memory for the array of row pointers
     char **grid = malloc(size * sizeof(char *));
     if (grid == NULL) {
         printf("Memory allocation failed.\n");
         exit(1);
     }
 
+    // Allocate memory for each row
     for (int i = 0; i < size; i++) {
         grid[i] = malloc(size * sizeof(char));
         if (grid[i] == NULL) {
             printf("Memory allocation failed.\n");
             exit(1);
         }
-        // Initialize the row with spaces
-        for (int j = 0; j < size; j++) {
-            grid[i][j] = ' '; // Initialize all cells to spaces
-        }
     }
     return grid;
 }
+
+// Function to free the dynamically allocated grid memory
+void freeGrid(char **grid, int size) {
+    // Free each row
+    for (int i = 0; i < size; i++) {
+        free(grid[i]);
+    }
+    // Free the array of row pointers
+    free(grid);
+}
+
 // Function to display the crossword grid with borders
-void displayGrid(char **grid, int size) {
-    printf("\nCurrent Grid:\n");
+void displayGrid(char **grid, int size, const char *username) {
+    printf("Grid from user '%s' (%dx%d):\n", username, size, size);
     for (int i = 0; i < size; i++) {
         // Print horizontal borders
         for (int j = 0; j < size; j++) {
@@ -57,364 +151,129 @@ void displayGrid(char **grid, int size) {
     printf("\n");
 }
 
-// Function to free the dynamically allocated grid memory
-void freeGrid(char **grid, int size) {
-    // Free each row
-    for (int i = 0; i < size; i++) {
-        free(grid[i]);
+// Function to deserialize the grid data
+char **deserializeGrid(const char *data, int size) {
+    char **grid = createGrid(size);
+    int index = 0;
+    for (int i = 0; i < size && data[index] != '\0'; i++) {
+        for (int j = 0; j < size && data[index] != '\0'; j++) {
+            grid[i][j] = data[index++];
+        }
     }
-    // Free the array of row pointers
-    free(grid);
+    return grid;
 }
 
-// Function to send the grid to the server
-void sendGridToServer(SOCKET sock, char **grid, int size, const char *username) {
-    // Serialize the grid into a string
-    char buffer[BUFFER_SIZE];
-    int offset = 0;
+void handle_client(void *client_socket_ptr) {
+    SOCKET client_socket = *(SOCKET *)client_socket_ptr;
+    free(client_socket_ptr);
 
-    // Include the username and grid size at the beginning
-    offset += snprintf(buffer + offset, BUFFER_SIZE - offset, "%s;%d;", username, size);
-
-    // Serialize the grid data
-    for (int i = 0; i < size; i++) {
-        for (int j = 0; j < size; j++) {
-            if (offset < BUFFER_SIZE - 2) { // Reserve space for '\0'
-                buffer[offset++] = grid[i][j];
-            } else {
-                printf("Buffer overflow while sending grid.\n");
-                return;
-            }
-        }
-    }
-    buffer[offset] = '\0'; // Null-terminate the string
-
-    // Send the grid data to the server
-    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR) {
-        printf("Failed to send data. Error Code: %d\n", WSAGetLastError());
-    }
-}
-// Function to display the answer grid
-void displayAnswers(int gridSize) {
-    printf("\nAnswer Grid:\n");
-
-    if (gridSize == 1) {
-        // Display the 3x3 answer grid
-        printf(" ---\n");
-        printf("| Y |\n");
-        printf(" ---\n");
-
-    }
-
-    if (gridSize == 2) {
-        // Display the 3x3 answer grid
-        printf(" --- ---\n");
-        printf("| Y | E |\n");
-        printf(" --- ---\n");
-        printf("| O | W |\n");
-        printf(" --- ---\n");
-    }
-
-    if (gridSize == 3) {
-        // Display the 3x3 answer grid
-        printf(" --- --- ---\n");
-        printf("| D | A | D |\n");
-        printf(" --- --- ---\n");
-        printf("| O | W | E |\n");
-        printf(" --- --- ---\n");
-        printf("| T | E | N |\n");
-        printf(" --- --- ---\n");
-
-    } 
-    if (gridSize == 4) {
-        // Replace this section with the correct display logic for a 5x5 answer grid
-        // Example grid for demonstration:
-        printf(" --- --- --- ---\n");
-        printf("| B | E | E | R |\n");
-        printf(" --- --- --- ---\n");
-        printf("| R | A | V | E |\n");
-        printf(" --- --- --- ---\n");
-        printf("| A | S | I | A |\n");
-        printf(" --- --- --- ---\n");
-        printf("| Y | E | L | L |\n");
-        printf(" --- --- --- ---\n");
-}       else if (gridSize == 5) {
-        // Replace this section with the correct display logic for a 5x5 answer grid
-        // Example grid for demonstration:
-        printf(" --- --- --- --- ---\n");
-        printf("| S | H | A | N | T |\n");
-        printf(" --- --- --- --- ---\n");
-        printf("| C | E | D | A | R |\n");
-        printf(" --- --- --- --- ---\n");
-        printf("| O | L | I | V | E |\n");
-        printf(" --- --- --- --- ---\n");
-        printf("| F | L | E | E | S |\n");
-        printf(" --- --- --- --- ---\n");
-        printf("| F | O | U | L | S |\n");
-        printf(" --- --- --- --- ---\n");
-
-}
-    else if (gridSize == 6) {
-        // Replace this section with the correct display logic for a 5x5 answer grid
-        // Example grid for demonstration:
-        printf(" --- --- --- --- --- ---\n");
-        printf("| A | L | A | S | K | A |\n");
-        printf(" --- --- --- --- --- ---\n");
-        printf("| S | I | P | P | E | D |\n");
-        printf(" --- --- --- --- --- ---\n");
-        printf("| S | N | O | R | E | D |\n");
-        printf(" --- --- --- --- --- ---\n");
-        printf("| E | N | G | I | N | E |\n");
-        printf(" --- --- --- --- --- ---\n");
-        printf("| T | E | E | T | E | R |\n");
-        printf(" --- --- --- --- --- ---\n");
-        printf("| S | T | E | E | R | S |\n");
-        printf(" --- --- --- --- --- ---\n");
-
-
-    } else {
-        printf("Invalid grid size. No answers available.\n");
-    }
-
-}
-// Function to display clues
-void displayClues(int gridSize) {
-    if (gridSize == 1){
-        printf("Clue: You have a 1 in 26 chance. Good luck!.\n");
-    }if(gridSize == 2){
-        printf("\nClues:\n");
-        printf("1. Across: Kanye          | Down: 'I' in Spanish.\n");
-        printf("2. Across: __, that hurt! | Down: That's nasty!\n");
-    }
-    if (gridSize == 3) {
-        printf("\nClues:\n");
-        printf("1. Across: Familiar term for father,   |  Down: A very small mark.\n");
-        printf("2. Across: To be in debt for something.|  Down: Fear Shock.\n");
-        printf("3. Across: Between nine and eleven     |  Down: A place where a wild animal lives.\n");
-    }
-    if (gridSize == 4) {
-        printf("\nClues:\n");
-        printf("1. Across: ____ Keg               | Down: Loud cry of mule or donkey.\n");
-        printf("2. Across: Special kind of music.| Down: Greetings!\n");
-        printf("3. Across: Where is Russia?       | Down: Maleficent.\n");
-        printf("4. Across: To scream.             | Down: Really not fake.\n");
-    }
-    if (gridSize == 5) {
-        printf("\nClues:\n");
-        printf("1. Across: Opposite of shall in poetry.              | Down: Mocks verbally.\n");
-        printf("2. Across: Fragrant cabinet wood.                    | Down: Greetings!\n");
-        printf("3. Across: Kind of green.                            | Down: Farewell, in Paris.\n");
-        printf("4. Across: Makes a run for it.                       | Down: Kind of orange.\n");
-        printf("5. Across: Infractions that may lead to yellow cards.| Down: Long lock of hair.\n");
-    }
-    if (gridSize == 6) {
-        printf("\nClues:\n");
-        printf("1. Across: Largest state.     | Down: Valuable Properties.\n");
-        printf("2. Across: Drank gingerly.    | Down: Small finch\n");
-        printf("3. Across: Slept noisily.     | Down: Furthest orbit.\n");
-        printf("4. Across: Movement machine.  | Down: Fairy, elf.\n");
-        printf("5. Across: Balance unsteadily.| Down: More enthusiastic.\n");
-        printf("6. Across: Navigatess vehicle. | Down: Mathematical snakes.\n");
-
-    }
-}
-
-// Function to create the answer grid
-char **createAnswerGrid(int gridSize) {
-    char **answerGrid = createGrid(gridSize);
-    if (gridSize == 1) {
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-        answerGrid[0][0] = 'Y';
-    }
-    if (gridSize == 2) {
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-        answerGrid[0][0] = 'Y';
-        answerGrid[0][1] = 'E';
-        answerGrid[1][0] = 'O';
-        answerGrid[1][1] = 'W';
-        
-
-    }
-    if (gridSize == 3) {
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-
-        answerGrid[0][0] = 'D';
-        answerGrid[0][1] = 'A';
-        answerGrid[0][2] = 'D';
-        answerGrid[1][0] = 'O';
-        answerGrid[1][1] = 'W';
-        answerGrid[1][2] = 'E';
-        answerGrid[2][0] = 'T';
-        answerGrid[2][1] = 'E';
-        answerGrid[2][2] = 'N';
-
-    } 
-    
-    if (gridSize == 4) {
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-        answerGrid[0][0] = 'B';
-        answerGrid[0][1] = 'E';
-        answerGrid[0][2] = 'E';
-        answerGrid[0][3] = 'R';
-        answerGrid[1][0] = 'R';
-        answerGrid[1][1] = 'A';
-        answerGrid[1][2] = 'V';
-        answerGrid[1][3] = 'E';
-        answerGrid[2][0] = 'A';
-        answerGrid[2][1] = 'S';
-        answerGrid[2][2] = 'I';
-        answerGrid[2][3] = 'A';
-        answerGrid[3][0] = 'Y';
-        answerGrid[3][1] = 'E';
-        answerGrid[3][2] = 'L';
-        answerGrid[3][3] = 'L';
-    }
-
-    if (gridSize == 5) {
-        // Answer grid for 5x5 crossword
-        // Across 1: "SHANT"
-        // A2: "CEDAR"
-        // A3: "OLIVE"
-        // A4: "FLEES"
-        // A5: "FOULS"
-        // Down 1: "SCOFF"
-        // D2: "HELLO"
-        // D3: "ADIEU"
-        // D4: "NAVEL"
-        // D5: "TRESS"
-
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-
-        // Place the answers
-        // Across 1
-        answerGrid[0][0] = 'S';
-        answerGrid[0][1] = 'H';
-        answerGrid[0][2] = 'A';
-        answerGrid[0][3] = 'N';
-        answerGrid[0][4] = 'T';
-        answerGrid[1][0] = 'C';
-        answerGrid[1][1] = 'E';
-        answerGrid[1][2] = 'D';
-        answerGrid[1][3] = 'A';
-        answerGrid[1][4] = 'R';
-        answerGrid[2][0] = 'O';
-        answerGrid[2][1] = 'L';
-        answerGrid[2][2] = 'I';
-        answerGrid[2][3] = 'V';
-        answerGrid[2][4] = 'E';
-        answerGrid[3][0] = 'F';
-        answerGrid[3][1] = 'L';
-        answerGrid[3][2] = 'E';
-        answerGrid[3][3] = 'E';
-        answerGrid[3][4] = 'S';
-        answerGrid[4][0] = 'F';
-        answerGrid[4][1] = 'O';
-        answerGrid[4][2] = 'U';
-        answerGrid[4][3] = 'L';
-        answerGrid[4][4] = 'S';
-
-    }
-
-    if (gridSize == 6) {
-        // Initialize all cells to spaces
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                answerGrid[i][j] = ' ';
-            }
-        }
-
-        answerGrid[0][0] = 'A';
-        answerGrid[0][1] = 'L';
-        answerGrid[0][2] = 'A';
-        answerGrid[0][3] = 'S';
-        answerGrid[0][4] = 'K';
-        answerGrid[0][5] = 'A';
-
-        answerGrid[1][0] = 'S';
-        answerGrid[1][1] = 'I';
-        answerGrid[1][2] = 'P';
-        answerGrid[1][3] = 'P';
-        answerGrid[1][4] = 'E';
-        answerGrid[1][5] = 'D';
-        
-        answerGrid[2][0] = 'S';
-        answerGrid[2][1] = 'N';
-        answerGrid[2][2] = 'O';
-        answerGrid[2][3] = 'R';
-        answerGrid[2][4] = 'E';
-        answerGrid[2][5] = 'D';
-        
-        answerGrid[3][0] = 'E';
-        answerGrid[3][1] = 'N';
-        answerGrid[3][2] = 'G';
-        answerGrid[3][3] = 'I';
-        answerGrid[3][4] = 'N';
-        answerGrid[3][5] = 'E';
-        
-        answerGrid[4][0] = 'T';
-        answerGrid[4][1] = 'E';
-        answerGrid[4][2] = 'E';
-        answerGrid[4][3] = 'T';
-        answerGrid[4][4] = 'E';
-        answerGrid[4][5] = 'R';
-
-        answerGrid[5][0] = 'S';
-        answerGrid[5][1] = 'T';
-        answerGrid[5][2] = 'E';
-        answerGrid[5][3] = 'E';
-        answerGrid[5][4] = 'R';
-        answerGrid[5][5] = 'S';
-    }
-
-    return answerGrid;
-}
-
-// Function to compare user's grid with the answer grid
-int compareGrids(char **userGrid, char **answerGrid, int size) {
-    for (int i = 0; i < size; i++) {
-        for (int j = 0; j < size; j++) {
-            if (answerGrid[i][j] != ' ') { // Only compare cells that should have letters
-                if (userGrid[i][j] != answerGrid[i][j]) {
-                    return 0; // Grids do not match
-                }
-            }
-        }
-    }
-    return 1; // Grids match
-}
-
-// Main function
-int main() {
-    WSADATA wsa;
-    SOCKET sock;
-    struct sockaddr_in server_address;
     char buffer[BUFFER_SIZE];
     char username[USERNAME_SIZE];
+
+    // Receive the username from the client
+    int bytes_read = recv(client_socket, username, USERNAME_SIZE - 1, 0);
+    if (bytes_read <= 0) {
+        printf("Failed to receive username from client.\n");
+        closesocket(client_socket);
+        _endthread();
+        return;
+    }
+    username[bytes_read] = '\0'; // Null-terminate the username
+
+    // Check if the username contains any banned words
+    if (contains_profanity(username)) {
+        const char *profanity_msg = "Username contains prohibited language. Connection terminated.";
+        send(client_socket, profanity_msg, strlen(profanity_msg), 0);
+        printf("Client disconnected");
+        closesocket(client_socket);
+        _endthread();
+        return;
+    }
+
+    printf("Client connected with username: %s\n", username);
+
+    // Send acknowledgment to the client
+    const char *ack_message = "Username received by server.";
+    send(client_socket, ack_message, strlen(ack_message), 0);
+
+    while (1) {
+        bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_read <= 0) {
+            break; // Connection closed or error
+        }
+        buffer[bytes_read] = '\0'; // Null-terminate the received string
+
+        // Parse the received data to extract the username, grid size, and grid data
+        char received_username[USERNAME_SIZE];
+        int gridSize = 0;
+        const char *gridData;
+        char *buffer_copy = malloc(bytes_read + 1);
+        if (!buffer_copy) {
+            printf("Memory allocation failed while handling client %s.\n", username);
+            continue;
+        }
+        strcpy(buffer_copy, buffer); // strtok modifies the string, so use a copy
+
+        char *token = strtok(buffer_copy, ";");
+        if (token != NULL) {
+            strncpy(received_username, token, USERNAME_SIZE - 1);
+            received_username[USERNAME_SIZE - 1] = '\0';
+            token = strtok(NULL, ";");
+            if (token != NULL) {
+                gridSize = atoi(token);
+                gridData = strtok(NULL, ";");
+            } else {
+                printf("Invalid data format from client %s.\n", username);
+                free(buffer_copy);
+                continue;
+            }
+        } else {
+            printf("Invalid data format from client %s.\n", username);
+            free(buffer_copy);
+            continue;
+        }
+
+        free(buffer_copy);
+
+        // Validate the grid size
+        if (gridSize < 1 || gridSize > 6) {
+            printf("Received invalid grid size %d from client %s.\n", gridSize, username);
+            const char *response = "Invalid grid size.";
+            send(client_socket, response, strlen(response), 0);
+            continue;
+        } else 
+
+        // Check if the username matches
+        if (strcmp(username, received_username) != 0) {
+            printf("Username mismatch for client %s.\n", username);
+            const char *response = "Username mismatch.";
+            send(client_socket, response, strlen(response), 0);
+            continue;
+        }
+
+        // Deserialize and display the grid
+        char **grid = deserializeGrid(gridData, gridSize);
+        displayGrid(grid, gridSize, username);
+        freeGrid(grid, gridSize);
+
+        // Send a response to the client
+        const char *response = "Grid received and displayed on server.";
+        send(client_socket, response, strlen(response), 0);
+    }
+
+    printf("Client %s disconnected.\n", username);
+    closesocket(client_socket);
+    _endthread(); // End the thread
+}
+
+int main() {
+    WSADATA wsa;
+    SOCKET server_socket, client_socket;
+    struct sockaddr_in server_address, client_address;
+    int addrlen = sizeof(client_address);
+
+    // Load banned words from Profanity.txt
+    load_profanity("Profanity.txt");
 
     // Initialize Winsock
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -423,173 +282,59 @@ int main() {
     }
 
     // Create socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
+    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
         printf("Socket creation failed. Error Code: %d\n", WSAGetLastError());
         WSACleanup();
         return 1;
     }
 
-    // Configure server address
+    // Bind socket to the specified port
     server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY; // Bind to any available interface
     server_address.sin_port = htons(PORT);
-    server_address.sin_addr.s_addr = inet_addr("10.2.147.196"); // Replace with your server's IPv4 address
 
-    // Connect to server
-    if (connect(sock, (struct sockaddr *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
-        printf("Connection failed. Error Code: %d\n", WSAGetLastError());
-        closesocket(sock);
-        WSACleanup();
-        return 1;
-    }
-    printf("Connected to the server.\n");
-
-    // Prompt for username
-    printf("Enter your username (max %d characters): ", USERNAME_SIZE - 1);
-    fgets(username, USERNAME_SIZE, stdin);
-    size_t len = strlen(username);
-    if (username[len - 1] == '\n') {
-        username[len - 1] = '\0';
-    }
-
-    // Send the username to the server
-    if (send(sock, username, strlen(username), 0) == SOCKET_ERROR) {
-        printf("Failed to send username. Error Code: %d\n", WSAGetLastError());
-        closesocket(sock);
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
+        printf("Bind failed. Error Code: %d\n", WSAGetLastError());
+        closesocket(server_socket);
         WSACleanup();
         return 1;
     }
 
-    // Receive server's acknowledgment
-    int bytes_read = recv(sock, buffer, BUFFER_SIZE - 1, 0);
-    if (bytes_read > 0) {
-        buffer[bytes_read] = '\0';
-        printf("Server: %s\n", buffer);
-    } else {
-        printf("Failed to receive acknowledgment from server.\n");
+    // Listen for incoming connections
+    if (listen(server_socket, 3) == SOCKET_ERROR) {
+        printf("Listen failed. Error Code: %d\n", WSAGetLastError());
+        closesocket(server_socket);
+        WSACleanup();
+        return 1;
+    }
+    printf("Server is running on port %d\n", PORT);
+
+    // Accept and handle incoming connections
+    while (1) {
+        if ((client_socket = accept(server_socket, (struct sockaddr *)&client_address, &addrlen)) == INVALID_SOCKET) {
+            printf("Accept failed. Error Code: %d\n", WSAGetLastError());
+            continue;
+        }
+
+        // Create a new thread to handle the client
+        SOCKET *client_socket_ptr = malloc(sizeof(SOCKET));
+        if (!client_socket_ptr) {
+            printf("Memory allocation failed while accepting a new client.\n");
+            closesocket(client_socket);
+            continue;
+        }
+        *client_socket_ptr = client_socket;
+        _beginthread(handle_client, 0, client_socket_ptr);
     }
 
-    int playAgain = 1; // Variable to control the "play again" loop
-    while (playAgain) {
-        int gridSize = 0;
-        char inputLine[100];
-
-        // Prompt user for grid size
-        while (gridSize != 1 && gridSize != 2 && gridSize != 3 && gridSize != 4 && gridSize != 5 && gridSize != 6) {
-            printf("Enter 1 for a 1x1 grid, 2 for a 2x2 grid, 3 for a 3x3 grid, 4 for a 4x4 grid, 5 for a 5x5 grid, 6 for a 6x6 grid: ");
-            if (fgets(inputLine, sizeof(inputLine), stdin) != NULL) {
-                int input = 0;
-                if (sscanf(inputLine, "%d", &input) == 1) {
-                    if (input >= 1 && input <= 6) {
-                        gridSize = input;
-                    } else {
-                        printf("Invalid input. Please input a number between 1 and 6.\n");
-                    }
-                } else {
-                    printf("Invalid input. Please input a number between 1 and 6.\n");
-                }
-            } else {
-                printf("Error reading input.\n");
-                closesocket(sock);
-                WSACleanup();
-                return 1;
-            }
-        }
-
-        // Create grids dynamically
-        char **grid = createGrid(gridSize);
-        char **answerGrid = createAnswerGrid(gridSize);
-
-        
-
-        // Main game loop
-        int keepEditing = 1;
-        while (keepEditing) {
-            // Display grid and clues
-            displayClues(gridSize);
-            displayGrid(grid, gridSize);
-
-            // Send the grid to the server
-            sendGridToServer(sock, grid, gridSize, username);
-
-            // Receive and print response from server
-            bytes_read = recv(sock, buffer, BUFFER_SIZE - 1, 0);
-            if (bytes_read <= 0) {
-                printf("Connection closed by server.\n");
-                break;
-            }
-            buffer[bytes_read] = '\0';
-            printf("Server: %s\n", buffer);
-
-            printf("Enter the row (1-%d), column (1-%d), and character to place,\n'or c' to check your answers, or 'x' to quit: ", gridSize, gridSize);
-
-            int row, col;
-            char ch;
-            if (fgets(inputLine, sizeof(inputLine), stdin) != NULL) {
-                if (inputLine[0] == 'x' || inputLine[0] == 'X') {
-                    keepEditing = 0;
-                    break;
-                }
-                if (inputLine[0] == '~') {
-                    displayAnswers(gridSize);
-                    continue;
-                }
-                if (inputLine[0] == 'c' || inputLine[0] == 'C') {
-                    if (compareGrids(grid, answerGrid, gridSize)) {
-                        displayGrid(grid, gridSize);
-                        printf("Congratulations, you win!\n");
-                        keepEditing = 0;
-                        break;
-                    } else {
-                        printf("\nTry again!\n");
-                        continue;
-                    }
-                }
-                if (sscanf(inputLine, "%d %d %c", &row, &col, &ch) == 3) {
-                    row -= 1;
-                    col -= 1;
-                    if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
-                        if (answerGrid[row][col] != ' ') {
-                            if (isalpha(ch)) {
-                                ch = toupper(ch);
-                                grid[row][col] = ch;
-                            } else {
-                                printf("Invalid character. Please enter a letter.\n");
-                            }
-                        } else {
-                            printf("This cell is not part of any clue.\n");
-                        }
-                    } else {
-                        printf("Invalid row or column. Please try again.\n");
-                    }
-                } else {
-                    printf("Invalid input format. Please enter row, column, and character.\n");
-                }
-            } else {
-                printf("Error reading input.\n");
-                break;
-            }
-        }
-
-        // Send final grid to the server
-        sendGridToServer(sock, grid, gridSize, username);
-
-        // Free allocated memory
-        freeGrid(grid, gridSize);
-        freeGrid(answerGrid, gridSize);
-
-        // Ask if the user wants to play again
-        printf("Would you like to play again? (y/n): ");
-        char playAgainInput[10];
-        fgets(playAgainInput, sizeof(playAgainInput), stdin);
-        if (playAgainInput[0] != 'y' && playAgainInput[0] != 'Y') {
-            playAgain = 0;
-        }
-    }
-
-    // Close socket and clean up
-    closesocket(sock);
+    // Cleanup (unreachable in current server loop)
+    closesocket(server_socket);
     WSACleanup();
 
-    printf("Goodbye!\n");
+    // Free banned words
+    for (int i = 0; i < banned_word_count; i++) {
+        free(banned_words[i]);
+    }
+
     return 0;
 }
