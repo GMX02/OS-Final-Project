@@ -195,9 +195,9 @@ void displayClues(int gridSize) {
     if (gridSize == 4) {
         printf("\nClues:\n");
         printf("1. Across: ____ Keg               | Down: Loud cry of mule or donkey.\n");
-        printf("2. Across: Single piece of gravel.| Down: Greetings!\n");
+        printf("2. Across: Special kind of music.| Down: Greetings!\n");
         printf("3. Across: Where is Russia?       | Down: Maleficent.\n");
-        printf("4. Across: To scream.             | Down: Really not real.\n");
+        printf("4. Across: To scream.             | Down: Really not fake.\n");
     }
     if (gridSize == 5) {
         printf("\nClues:\n");
@@ -209,12 +209,12 @@ void displayClues(int gridSize) {
     }
     if (gridSize == 6) {
         printf("\nClues:\n");
-        printf("1. Across: Largest state.     | Down: Valuable Property.\n");
-        printf("2. Across: Drink gingerly.    | Down: Small finch\n");
+        printf("1. Across: Largest state.     | Down: Valuable Properties.\n");
+        printf("2. Across: Drank gingerly.    | Down: Small finch\n");
         printf("3. Across: Slept noisily.     | Down: Furthest orbit.\n");
         printf("4. Across: Movement machine.  | Down: Fairy, elf.\n");
         printf("5. Across: Balance unsteadily.| Down: More enthusiastic.\n");
-        printf("6. Across: Navigates vehicle. | Down: Mathematical snakes.\n");
+        printf("6. Across: Navigatess vehicle. | Down: Mathematical snakes.\n");
 
     }
 }
@@ -432,7 +432,7 @@ int main() {
     // Configure server address
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(PORT);
-    server_address.sin_addr.s_addr = inet_addr("10.2.146.156"); // Replace with your server's IPv4 address
+    server_address.sin_addr.s_addr = inet_addr("10.2.147.172"); // Replace with your server's IPv4 address
 
     // Connect to server
     if (connect(sock, (struct sockaddr *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
@@ -499,8 +499,7 @@ int main() {
         char **grid = createGrid(gridSize);
         char **answerGrid = createAnswerGrid(gridSize);
 
-        // Display clues
-        displayClues(gridSize);
+        
 
         // Main game loop
         int keepEditing = 1;
